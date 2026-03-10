@@ -1,0 +1,15 @@
+# Web API Framework
+fastapi
+uvicorn
+
+# HTTP Client for Harvester and Watcher
+requests
+
+# Blockchain & Ethereum tools (for Unmasking)
+web3
+
+# LLM Interaction (OpenRouter/OpenAI compatible)
+openai
+
+# Environment & Configuration
+python-dotenv

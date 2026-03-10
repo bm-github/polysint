@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <link rel="icon" href="/favicon.png" type="image/png">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PolySINT | OSINT Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: { extend: { colors: { polysint: '#10b981' } } }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+        /* Toggle switch */
+        .toggle-track {
+            transition: background-color 0.2s ease;
+        }
+        input:checked + .toggle-track {
+            background-color: #10b981;
+        }
+        .toggle-thumb {
+            transition: transform 0.2s ease;
+        }
+        input:checked ~ .toggle-track .toggle-thumb {
+            transform: translateX(16px);
+        }
+    </style>
+</head>
+
+<body class="bg-gray-900 text-gray-200 font-sans min-h-screen">
+
+    <!-- Navbar -->
+    <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex flex-wrap gap-3 justify-between items-center">
+        <!-- Brand -->
+        <div class="flex items-center space-x-3 shrink-0">
+            <span class="text-2xl">🕵️‍♂️</span>
+            <h1 class="text-xl font-bold tracking-wider text-white">
+                Poly<span class="text-polysint">SINT</span>
+                <span class="text-xs text-gray-500 font-normal ml-2 font-mono">Engine</span>
+            </h1>
+        </div>
+
+        <!-- Search — Enter key only -->
+        <div class="flex-1 min-w-[200px] max-w-lg">
+            <input type="text" id="searchInput" placeholder="Search markets… press Enter to search"
+                class="w-full bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:border-polysint transition-colors text-sm">
+        </div>
+
+        <!-- Controls -->
+        <div class="flex items-center gap-4 shrink-0 flex-wrap">
+
+            <!-- Volume Filter -->
+            <div class="flex items-center gap-1.5" title="Filter markets by lifetime volume. Leave blank for no limit.">
+                <span class="text-xs text-gray-500 font-mono shrink-0">Vol $</span>
+                <input
+                    type="number"
+                    id="volMin"
+                    placeholder="min"
+                    min="0"
+                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono"
+                >
+                <span class="text-xs text-gray-600">–</span>
+                <input
+                    type="number"
+                    id="volMax"
+                    placeholder="max"
+                    min="0"
+                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono"
+                >
+                <button
+                    onclick="loadMarkets(document.getElementById('searchInput').value.trim())"
+                    class="bg-gray-700 border border-gray-600 text-gray-300 hover:bg-gray-600 hover:text-white px-2 py-1.5 rounded text-xs transition-all font-mono"
+                    title="Apply volume filter">
+                    Apply
+                </button>
+            </div>
+
+            <!-- Web Research Toggle -->
+            <label class="flex items-center gap-2 cursor-pointer select-none" title="Toggle Tavily web research during AI analysis. Disable if you see 400 errors.">
+                <span id="researchToggleLabel" class="text-xs text-gray-500 font-mono">Web Research: OFF</span>
+                <div class="relative inline-block w-9 h-5">
+                    <input type="checkbox" id="researchToggle" class="sr-only peer" onchange="onResearchToggle()">
+                    <div class="toggle-track w-9 h-5 bg-gray-700 rounded-full border border-gray-600 peer-checked:bg-polysint peer-checked:border-polysint transition-all"></div>
+                    <div class="toggle-thumb absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow peer-checked:translate-x-4 transition-transform"></div>
+                </div>
+            </label>
+
+            <!-- Refresh button + countdown -->
+            <div class="flex items-center gap-2">
+                <button onclick="loadMarkets(document.getElementById('searchInput').value.trim())"
+                    class="bg-gray-700 border border-gray-600 text-gray-300 hover:bg-gray-600 hover:text-white px-3 py-1.5 rounded text-xs transition-all font-mono"
+                    title="Refresh markets now">
+                    ↻ Refresh
+                </button>
+                <span id="refreshCountdown" class="text-xs text-gray-600 font-mono hidden"></span>
+            </div>
+
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+        <!-- Markets Panel -->
+        <section class="lg:col-span-2 bg-gray-800 rounded-xl shadow-lg border border-gray-700 overflow-hidden flex flex-col max-h-[80vh]">
+            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0 flex items-center justify-between">
+                <h2 class="text-base font-semibold text-white flex items-center gap-2">
+                    📈 Top Markets by Volume
+                </h2>
+                <div class="flex items-center gap-3">
+                    <span id="marketCounter" class="text-xs text-gray-500 font-mono"></span>
+                    <div class="flex items-center gap-1.5 text-xs text-gray-600">
+                        <span class="inline-block w-2 h-2 rounded-full bg-red-500/70 animate-pulse"></span>
+                        <span class="text-red-400/70">≥10% anomaly</span>
+                        <span class="ml-2 inline-block w-2 h-2 rounded-full bg-amber-500/70"></span>
+                        <span class="text-amber-400/70">≥5% watch</span>
+                    </div>
+                </div>
+            </div>
+            <div class="overflow-y-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead class="bg-gray-700/50 text-gray-400 text-xs uppercase sticky top-0">
+                        <tr>
+                            <th class="px-4 py-3 font-medium">Question</th>
+                            <th class="px-4 py-3 font-medium w-24">24h Shift</th>
+                            <th class="px-4 py-3 font-medium w-32">Volume</th>
+                            <th class="px-4 py-3 font-medium w-28 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="marketsTable" class="divide-y divide-gray-700/50 text-sm">
+                        <!-- showIdleState() fills this on load -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Watchlist Panel -->
+        <section class="bg-gray-800 rounded-xl shadow-lg border border-gray-700 overflow-hidden flex flex-col max-h-[80vh]">
+            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0">
+                <h2 class="text-base font-semibold text-white flex items-center mb-3">🐳 Entity Watchlist</h2>
+
+                <!-- Add Target Form -->
+                <div class="flex gap-2 flex-wrap">
+                    <input type="text" id="newAddress" placeholder="0x address…"
+                        class="flex-1 min-w-0 bg-gray-900 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs">
+                    <input type="text" id="newLabel" placeholder="Label"
+                        class="w-24 bg-gray-900 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs">
+                    <button onclick="addTarget()"
+                        class="bg-polysint hover:bg-emerald-400 text-gray-900 font-bold px-3 py-1.5 rounded text-xs transition-colors shrink-0">
+                        Add
+                    </button>
+                </div>
+                <p id="addError" class="text-red-400 text-xs mt-2 hidden"></p>
+            </div>
+
+            <div class="overflow-y-auto">
+                <table class="w-full text-left border-collapse">
+                    <tbody id="watchlistTable" class="divide-y divide-gray-700/50 text-sm">
+                        <!-- Populated by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- AI Analysis Modal -->
+    <div id="aiModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden flex justify-center items-center z-50 p-4">
+        <div class="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-900 shrink-0">
+                <h3 id="aiModalTitle" class="text-base font-bold text-white flex items-center flex-wrap gap-2">🤖 PolySINT Intelligence</h3>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl leading-none ml-4 shrink-0">&times;</button>
+            </div>
+            <div class="p-6 overflow-y-auto text-gray-300 leading-relaxed text-sm whitespace-pre-wrap" id="aiModalContent">
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=6"></script>
+    <script>
+        // Show idle state immediately — don't auto-load
+        showIdleState();
+        // Show countdown only once markets are loaded (startAutoRefresh reveals it)
+        const _origStart = startAutoRefresh;
+        startAutoRefresh = function(q) {
+            document.getElementById('refreshCountdown').classList.remove('hidden');
+            _origStart(q);
+        };
+    </script>
+</body>
+</html>
