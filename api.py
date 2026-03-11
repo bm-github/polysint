@@ -23,6 +23,10 @@ MIN_VOLUME_FOR_CLOB = 5000
 # Max concurrent CLOB requests
 CLOB_WORKERS = 20
 
+# How long (in seconds) a cached analysis is considered fresh before the next
+# request triggers a new LLM call. 3600 = 1 hour.
+ANALYSIS_CACHE_TTL = 3600
+
 # ─── Input limits ─────────────────────────────────────────────────────────────
 # Prevents oversized strings reaching SQLite LIKE or the LLM prompt
 MAX_SEARCH_LEN = 200
@@ -162,10 +166,15 @@ def unmask_wallet(address: str):
 @app.get("/markets/{market_id}/ai-analysis")
 def get_ai_analysis(
     market_id: str,
-    research: bool = Query(default=False, description="Enable Tavily web research for news context")
+    research: bool = Query(default=False, description="Enable Tavily web research for news context"),
+    force: bool = Query(default=False, description="Bypass cache and force a fresh LLM call")
 ):
     """
     Run AI analysis on a market.
+
+    Responses are cached per (market_id, research flag) for ANALYSIS_CACHE_TTL seconds (1 hour).
+    Use ?force=true to bypass the cache and trigger a fresh LLM call regardless of age.
+
     Set ?research=true to include Tavily web search context (requires TAVILY_API_KEY).
     Set ?research=false (default) to skip web search and use price data only.
     """
@@ -173,8 +182,36 @@ def get_ai_analysis(
     if not MARKET_ID_RE.match(market_id):
         raise HTTPException(status_code=400, detail="Invalid market ID format.")
 
+    research_flag = 1 if research else 0
+
     db = get_db()
     try:
+        # ── Cache read ────────────────────────────────────────────────────────
+        # Check for a fresh cached analysis before hitting the LLM.
+        # The cache key is (market_id, research_used) so toggling web research
+        # always produces a distinct, correctly-labelled result.
+        if not force:
+            cached = db.execute(
+                """
+                SELECT analysis, created_at
+                FROM analyses
+                WHERE market_id = ?
+                  AND research_used = ?
+                  AND created_at >= datetime('now', ? || ' seconds')
+                """,
+                (market_id, research_flag, f"-{ANALYSIS_CACHE_TTL}")
+            ).fetchone()
+
+            if cached:
+                log.warning(f"Cache hit for market {market_id} (research={research})")
+                return {
+                    "analysis": cached["analysis"],
+                    "research_used": research,
+                    "cached": True,
+                    "cached_at": cached["created_at"]
+                }
+
+        # ── Cache miss / forced refresh — run the LLM ─────────────────────
         market = db.execute("SELECT * FROM markets WHERE id = ?", (market_id,)).fetchone()
         if not market:
             raise HTTPException(status_code=404, detail="Market not found")
@@ -198,7 +235,26 @@ def get_ai_analysis(
             market['volume'],
             use_research=research
         )
-        return {"analysis": analysis, "research_used": research}
+
+        # ── Cache write ───────────────────────────────────────────────────────
+        # INSERT OR REPLACE so a forced refresh or a post-TTL call overwrites
+        # the stale row cleanly without leaving orphaned rows.
+        db.execute(
+            """
+            INSERT OR REPLACE INTO analyses (market_id, research_used, analysis, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+            """,
+            (market_id, research_flag, analysis)
+        )
+        db.commit()
+
+        return {
+            "analysis": analysis,
+            "research_used": research,
+            "cached": False,
+            "cached_at": None,
+        }
+
     except HTTPException:
         raise
     except Exception as e:

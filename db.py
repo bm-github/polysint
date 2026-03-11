@@ -37,5 +37,19 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS watch_list 
         (address TEXT PRIMARY KEY, label TEXT, added_at DATETIME)''')
 
+    # Analyses Cache Table
+    # Stores LLM-generated intelligence briefs with a TTL so repeated dashboard
+    # requests for the same market don't burn a fresh API call every time.
+    # research_used distinguishes cached results produced with/without Tavily,
+    # so toggling web research always triggers a fresh analysis.
+    cursor.execute('''CREATE TABLE IF NOT EXISTS analyses
+        (
+            market_id    TEXT    NOT NULL,
+            research_used INTEGER NOT NULL DEFAULT 0,  -- 0 = false, 1 = true
+            analysis     TEXT    NOT NULL,
+            created_at   DATETIME NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (market_id, research_used)
+        )''')
+
     conn.commit()
     conn.close()

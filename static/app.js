@@ -232,7 +232,7 @@ async function loadMarkets(searchQuery = '', silent = false) {
 
 // ─── AI Analysis Modal ────────────────────────────────────────────────────────
 // useResearch is read live from the toggle at click time — not passed from render time
-async function analyzeMarket(marketId) {
+async function analyzeMarket(marketId, forceRefresh = false) {
     const useResearch = isResearchEnabled();
 
     const modal = document.getElementById('aiModal');
@@ -255,13 +255,16 @@ async function analyzeMarket(marketId) {
                 <div class="w-2 h-2 bg-polysint rounded-full animate-bounce" style="animation-delay:300ms"></div>
             </div>
             <div class="text-polysint text-sm animate-pulse">
-                ${useResearch ? 'Scanning web + running LLM analysis...' : 'Running LLM analysis...'}
+                ${forceRefresh ? 'Forcing fresh LLM analysis...' : useResearch ? 'Scanning web + running LLM analysis...' : 'Running LLM analysis...'}
             </div>
-            ${!useResearch ? '<div class="text-gray-600 text-xs">Enable Web Research in the toolbar for news context.</div>' : ''}
+            ${!useResearch && !forceRefresh ? '<div class="text-gray-600 text-xs">Enable Web Research in the toolbar for news context.</div>' : ''}
         </div>`;
 
     try {
-        const url = `/markets/${marketId}/ai-analysis?research=${useResearch}`;
+        const params = new URLSearchParams({ research: useResearch });
+        if (forceRefresh) params.set('force', 'true');
+
+        const url = `/markets/${marketId}/ai-analysis?${params.toString()}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error("AI Analysis Failed");
         const data = await res.json();
@@ -270,7 +273,37 @@ async function analyzeMarket(marketId) {
             .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white">$1</strong>')
             .replace(/\n/g, '<br>');
 
-        content.innerHTML = `<div class="p-3 border-l-4 border-polysint bg-gray-900/60 rounded-r leading-relaxed">${formatted}</div>`;
+        // ── Cache status badge ────────────────────────────────────────────────
+        let cacheBadge = '';
+        if (data.cached) {
+            // Format the UTC timestamp into something readable
+            const cachedAt = data.cached_at
+                ? new Date(data.cached_at + 'Z').toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                : 'recently';
+            cacheBadge = `
+                <div class="mb-4 flex items-center justify-between gap-3 flex-wrap">
+                    <span class="inline-flex items-center gap-1.5 text-xs bg-blue-900/30 text-blue-400 border border-blue-800/50 px-2 py-1 rounded font-mono">
+                        ⚡ Cached result from ${cachedAt} — expires after 1 hour
+                    </span>
+                    <button
+                        onclick="analyzeMarket('${marketId}', true)"
+                        class="text-xs text-gray-500 hover:text-polysint underline transition-colors font-mono">
+                        ↻ Force refresh
+                    </button>
+                </div>`;
+        } else {
+            cacheBadge = `
+                <div class="mb-4">
+                    <span class="inline-flex items-center gap-1.5 text-xs bg-polysint/10 text-polysint border border-polysint/20 px-2 py-1 rounded font-mono">
+                        ✦ Fresh analysis — cached for 1 hour
+                    </span>
+                </div>`;
+        }
+
+        content.innerHTML = `
+            ${cacheBadge}
+            <div class="p-3 border-l-4 border-polysint bg-gray-900/60 rounded-r leading-relaxed">${formatted}</div>`;
+
     } catch (e) {
         content.innerHTML = `
             <div class="text-red-400 bg-red-900/20 p-4 rounded border border-red-800 text-sm">
