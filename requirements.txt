@@ -11,5 +11,8 @@ web3
 # LLM Interaction (OpenRouter/OpenAI compatible)
 openai
 
+# Data Validation
+pydantic
+
 # Environment & Configuration
 python-dotenv

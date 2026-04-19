@@ -22,19 +22,16 @@
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
 
-        /* Toggle switch */
-        .toggle-track {
-            transition: background-color 0.2s ease;
-        }
-        input:checked + .toggle-track {
-            background-color: #10b981;
-        }
-        .toggle-thumb {
-            transition: transform 0.2s ease;
-        }
-        input:checked ~ .toggle-track .toggle-thumb {
-            transform: translateX(16px);
-        }
+        .toggle-track { transition: background-color 0.2s ease; }
+        input:checked + .toggle-track { background-color: #10b981; }
+        .toggle-thumb { transition: transform 0.2s ease; }
+        input:checked ~ .toggle-track .toggle-thumb { transform: translateX(16px); }
+
+        .entity-detail { max-height: 0; overflow: hidden; transition: max-height 0.3s ease; }
+        .entity-detail.open { max-height: 600px; }
+
+        .tab-btn.active { color: #10b981; border-color: #10b981; }
+        .tab-btn { border-bottom: 2px solid transparent; }
     </style>
 </head>
 
@@ -42,7 +39,6 @@
 
     <!-- Navbar -->
     <nav class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex flex-wrap gap-3 justify-between items-center">
-        <!-- Brand -->
         <div class="flex items-center space-x-3 shrink-0">
             <span class="text-2xl">🕵️‍♂️</span>
             <h1 class="text-xl font-bold tracking-wider text-white">
@@ -51,43 +47,25 @@
             </h1>
         </div>
 
-        <!-- Search — Enter key only -->
         <div class="flex-1 min-w-[200px] max-w-lg">
             <input type="text" id="searchInput" placeholder="Search markets… press Enter to search"
                 class="w-full bg-gray-700 text-white px-4 py-2 rounded-lg border border-gray-600 focus:outline-none focus:border-polysint transition-colors text-sm">
         </div>
 
-        <!-- Controls -->
         <div class="flex items-center gap-4 shrink-0 flex-wrap">
-
-            <!-- Volume Filter -->
-            <div class="flex items-center gap-1.5" title="Filter markets by lifetime volume. Leave blank for no limit.">
+            <div class="flex items-center gap-1.5" title="Filter markets by lifetime volume.">
                 <span class="text-xs text-gray-500 font-mono shrink-0">Vol $</span>
-                <input
-                    type="number"
-                    id="volMin"
-                    placeholder="min"
-                    min="0"
-                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono"
-                >
+                <input type="number" id="volMin" placeholder="min" min="0"
+                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono">
                 <span class="text-xs text-gray-600">–</span>
-                <input
-                    type="number"
-                    id="volMax"
-                    placeholder="max"
-                    min="0"
-                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono"
-                >
-                <button
-                    onclick="loadMarkets(document.getElementById('searchInput').value.trim())"
+                <input type="number" id="volMax" placeholder="max" min="0"
+                    class="w-20 bg-gray-700 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs font-mono">
+                <button onclick="loadMarkets(document.getElementById('searchInput').value.trim())"
                     class="bg-gray-700 border border-gray-600 text-gray-300 hover:bg-gray-600 hover:text-white px-2 py-1.5 rounded text-xs transition-all font-mono"
-                    title="Apply volume filter">
-                    Apply
-                </button>
+                    title="Apply volume filter">Apply</button>
             </div>
 
-            <!-- Web Research Toggle -->
-            <label class="flex items-center gap-2 cursor-pointer select-none" title="Toggle Tavily web research during AI analysis. Disable if you see 400 errors.">
+            <label class="flex items-center gap-2 cursor-pointer select-none" title="Toggle Tavily web research during AI analysis.">
                 <span id="researchToggleLabel" class="text-xs text-gray-500 font-mono">Web Research: OFF</span>
                 <div class="relative inline-block w-9 h-5">
                     <input type="checkbox" id="researchToggle" class="sr-only peer" onchange="onResearchToggle()">
@@ -96,16 +74,12 @@
                 </div>
             </label>
 
-            <!-- Refresh button + countdown -->
             <div class="flex items-center gap-2">
                 <button onclick="loadMarkets(document.getElementById('searchInput').value.trim())"
                     class="bg-gray-700 border border-gray-600 text-gray-300 hover:bg-gray-600 hover:text-white px-3 py-1.5 rounded text-xs transition-all font-mono"
-                    title="Refresh markets now">
-                    ↻ Refresh
-                </button>
+                    title="Refresh markets now">↻ Refresh</button>
                 <span id="refreshCountdown" class="text-xs text-gray-600 font-mono hidden"></span>
             </div>
-
         </div>
     </nav>
 
@@ -114,7 +88,7 @@
 
         <!-- Markets Panel -->
         <section class="lg:col-span-2 bg-gray-800 rounded-xl shadow-lg border border-gray-700 overflow-hidden flex flex-col max-h-[80vh]">
-            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0 flex items-center justify-between">
+            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0 flex items-center justify-between z-10">
                 <h2 class="text-base font-semibold text-white flex items-center gap-2">
                     📈 Top Markets by Volume
                 </h2>
@@ -122,24 +96,23 @@
                     <span id="marketCounter" class="text-xs text-gray-500 font-mono"></span>
                     <div class="flex items-center gap-1.5 text-xs text-gray-600">
                         <span class="inline-block w-2 h-2 rounded-full bg-red-500/70 animate-pulse"></span>
-                        <span class="text-red-400/70">≥10% anomaly</span>
+                        <span class="text-red-400/70">≥10%</span>
                         <span class="ml-2 inline-block w-2 h-2 rounded-full bg-amber-500/70"></span>
-                        <span class="text-amber-400/70">≥5% watch</span>
+                        <span class="text-amber-400/70">≥5%</span>
                     </div>
                 </div>
             </div>
             <div class="overflow-y-auto">
                 <table class="w-full text-left border-collapse">
-                    <thead class="bg-gray-700/50 text-gray-400 text-xs uppercase sticky top-0">
+                    <thead class="bg-gray-700/50 text-gray-400 text-xs uppercase sticky top-0 z-10">
                         <tr>
                             <th class="px-4 py-3 font-medium">Question</th>
                             <th class="px-4 py-3 font-medium w-24">24h Shift</th>
                             <th class="px-4 py-3 font-medium w-32">Volume</th>
-                            <th class="px-4 py-3 font-medium w-28 text-right">Action</th>
+                            <th class="px-4 py-3 font-medium w-40 text-right">Actions</th>
                         </tr>
                     </thead>
                     <tbody id="marketsTable" class="divide-y divide-gray-700/50 text-sm">
-                        <!-- showIdleState() fills this on load -->
                     </tbody>
                 </table>
             </div>
@@ -147,10 +120,8 @@
 
         <!-- Watchlist Panel -->
         <section class="bg-gray-800 rounded-xl shadow-lg border border-gray-700 overflow-hidden flex flex-col max-h-[80vh]">
-            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0">
+            <div class="p-4 border-b border-gray-700 bg-gray-800 sticky top-0 z-10">
                 <h2 class="text-base font-semibold text-white flex items-center mb-3">🐳 Entity Watchlist</h2>
-
-                <!-- Add Target Form -->
                 <div class="flex gap-2 flex-wrap">
                     <input type="text" id="newAddress" placeholder="0x address…"
                         class="flex-1 min-w-0 bg-gray-900 text-white px-2 py-1.5 rounded border border-gray-600 focus:outline-none focus:border-polysint text-xs">
@@ -163,11 +134,9 @@
                 </div>
                 <p id="addError" class="text-red-400 text-xs mt-2 hidden"></p>
             </div>
-
             <div class="overflow-y-auto">
                 <table class="w-full text-left border-collapse">
                     <tbody id="watchlistTable" class="divide-y divide-gray-700/50 text-sm">
-                        <!-- Populated by JS -->
                     </tbody>
                 </table>
             </div>
@@ -176,7 +145,7 @@
 
     <!-- AI Analysis Modal -->
     <div id="aiModal" class="fixed inset-0 bg-black/70 backdrop-blur-sm hidden flex justify-center items-center z-50 p-4">
-        <div class="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+        <div class="bg-gray-800 border border-gray-700 rounded-xl w-full max-w-3xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-900 shrink-0">
                 <h3 id="aiModalTitle" class="text-base font-bold text-white flex items-center flex-wrap gap-2">🤖 PolySINT Intelligence</h3>
                 <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl leading-none ml-4 shrink-0">&times;</button>
@@ -186,11 +155,9 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=6"></script>
+    <script src="/static/app.js?v=7"></script>
     <script>
-        // Show idle state immediately — don't auto-load
         showIdleState();
-        // Show countdown only once markets are loaded (startAutoRefresh reveals it)
         const _origStart = startAutoRefresh;
         startAutoRefresh = function(q) {
             document.getElementById('refreshCountdown').classList.remove('hidden');

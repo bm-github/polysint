@@ -1,6 +1,6 @@
 import json
 import time
-from db import get_db
+from db import get_db, init_db
 from notifier import Notifier
 from logger import get_logger
 from clob import get_shift, get_price_history, DEFAULT_INTERVAL
@@ -31,6 +31,7 @@ def safe_float(val):
 
 
 def scan_for_anomalies():
+    init_db()
     db = get_db()
     markets = db.execute("SELECT id, question, volume, clob_token_id FROM markets").fetchall()
     db.close()

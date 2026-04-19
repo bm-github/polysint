@@ -1,21 +1,11 @@
 import os
 from datetime import datetime, timezone
 from openai import OpenAI
-from dotenv import load_dotenv
 from researcher import PolyResearcher
 from config import Config
 
-load_dotenv()
-
 
 def _derive_price_behaviour(price_history: list) -> dict:
-    """
-    Derives observable behavioural signals from a flat price list.
-    These become first-class evidence for the LLM — it should never need to
-    say "no data" about the price action itself, only about external news.
-
-    Returns a dict of computed metrics with plain-English descriptions.
-    """
     if not price_history or len(price_history) < 2:
         return {"summary": "Insufficient price history (fewer than 2 data points)."}
 
@@ -32,11 +22,9 @@ def _derive_price_behaviour(price_history: list) -> dict:
     total_range = high - low
     n = len(prices)
 
-    # Find the single largest jump between consecutive points
     jumps = [(prices[i+1] - prices[i], i) for i in range(n - 1)]
     max_jump, max_jump_idx = max(jumps, key=lambda x: abs(x[0]))
 
-    # Characterise where in the window the big move happened
     position_pct = round((max_jump_idx / max(n - 1, 1)) * 100)
     if position_pct < 25:
         jump_timing = "early in the window"
@@ -45,8 +33,6 @@ def _derive_price_behaviour(price_history: list) -> dict:
     else:
         jump_timing = "late in the window (recent)"
 
-    # Is the move holding or reversing?
-    # Compare last price to the price at peak/trough
     if total_shift > 0:
         reversal = round((high - last) * 100, 1)
         holding = reversal < 3.0
@@ -58,8 +44,6 @@ def _derive_price_behaviour(price_history: list) -> dict:
     else:
         reversal_note = "No net movement over the window."
 
-    # Was the move gradual or sudden?
-    # Count how many steps account for 80% of the total absolute move
     total_abs = sum(abs(j[0]) for j in jumps)
     sorted_jumps = sorted(jumps, key=lambda x: abs(x[0]), reverse=True)
     cumulative = 0
@@ -99,12 +83,24 @@ class PolyAnalyst:
         self.model = os.getenv("ANALYSIS_MODEL")
         self.researcher = PolyResearcher()
 
+    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Single point of entry for all LLM calls."""
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0,
+            max_tokens=1500
+        )
+        return response.choices[0].message.content
+
     def analyze_market_shift(self, market_question, price_history, volume, use_research: bool = None):
         """Explains WHY a market is moving, grounded first in price behaviour, then optionally in news."""
         if use_research is None:
             use_research = Config.ENABLE_WEB_RESEARCH
 
-        # Always derive price behaviour — this is the primary evidence source
         behaviour = _derive_price_behaviour(price_history)
 
         if use_research:
@@ -203,15 +199,7 @@ ANALYSIS:
 INSIDER SIGNAL: (1-10) — (one sentence justification referencing specific data points)
 """
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0
-        )
-        return response.choices[0].message.content
+        return self._call_llm(system_prompt, prompt)
 
     def profile_wallet(self, wallet_address, real_owner, trades):
         """Profiles a specific trader based on behavior and unmasked ID."""
@@ -261,12 +249,4 @@ ENTITY TYPE: (from the list above)
 ALPHA LEVEL: (1-10) — (one sentence justification referencing a specific pattern, or acknowledgement of data limits)
 """
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0
-        )
-        return response.choices[0].message.content
+        return self._call_llm(system_prompt, prompt)

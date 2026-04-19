@@ -1,53 +1,105 @@
-from fastapi import FastAPI, HTTPException, Query
+import time
+from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from db import get_db, init_db
 from analyst import PolyAnalyst
-from utils import unmask_proxy
+from utils import unmask_proxy, unmask_proxy_full
 from logger import get_logger
-from clob import get_shift, get_price_history, get_history_as_price_list, DEFAULT_INTERVAL
+from clob import get_shift, get_price_history, get_history_as_price_list, DEFAULT_INTERVAL, analyze_orderbook_depth
 from pydantic import BaseModel, field_validator
 import re
-import requests
+import requests as http_requests
 import json
+
+from config import Config
 
 log = get_logger("API")
 
 app = FastAPI(title="PolySINT Core Engine")
 analyst = PolyAnalyst()
 
-# Pre-filter: only consider markets above this volume before hitting CLOB.
 MIN_VOLUME_FOR_CLOB = 5000
-
-# Max concurrent CLOB requests
 CLOB_WORKERS = 20
-
-# How long (in seconds) a cached analysis is considered fresh before the next
-# request triggers a new LLM call. 3600 = 1 hour.
 ANALYSIS_CACHE_TTL = 3600
 
-# ─── Input limits ─────────────────────────────────────────────────────────────
-# Prevents oversized strings reaching SQLite LIKE or the LLM prompt
 MAX_SEARCH_LEN = 200
 MAX_LABEL_LEN = 80
-# Ethereum addresses are always exactly 42 characters (0x + 40 hex chars)
 ADDRESS_RE = re.compile(r'^0x[0-9a-fA-F]{40}$')
-# Market IDs from Polymarket are numeric strings — reject anything else
 MARKET_ID_RE = re.compile(r'^[0-9]+$')
 
+_rate_limit_store: dict[str, list[float]] = defaultdict(list)
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX = Config.RATE_LIMIT_PER_MINUTE
+
+
+@app.middleware("http")
+async def rate_limiter(request: Request, call_next):
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    requests_ts = _rate_limit_store[client_ip]
+    _rate_limit_store[client_ip] = [t for t in requests_ts if now - t < RATE_LIMIT_WINDOW]
+    if len(_rate_limit_store[client_ip]) >= RATE_LIMIT_MAX:
+        return Response(content='{"detail":"Rate limit exceeded"}', status_code=429, media_type="application/json")
+    _rate_limit_store[client_ip].append(now)
+    response = await call_next(request)
+    return response
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.tailwindcss.com; "
+        "style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    return response
+
+
+@app.middleware("http")
+async def api_auth(request: Request, call_next):
+    if not Config.API_AUTH_ENABLED:
+        return await call_next(request)
+
+    public_paths = {"/", "/static/"}
+    path = request.url.path
+
+    if path == "/" or path.startswith("/static/"):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if api_key != Config.API_KEY:
+        return Response(content='{"detail":"Unauthorized"}', status_code=401, media_type="application/json")
+
+    return await call_next(request)
+
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 @app.on_event("startup")
 def startup():
     init_db()
 
+
 @app.get("/")
 def serve_dashboard():
     return FileResponse("static/index.html")
 
+
 def _validate_address(address: str) -> str:
-    """Raises 400 if address is not a valid 42-char 0x Ethereum address."""
     if not ADDRESS_RE.match(address):
         raise HTTPException(
             status_code=400,
@@ -55,11 +107,8 @@ def _validate_address(address: str) -> str:
         )
     return address
 
+
 def _enrich_market(m: dict) -> dict | None:
-    """
-    Fetches CLOB history for a single market and attaches shift + current_price.
-    Returns None if the market should be excluded (settled or no data).
-    """
     clob_token_id = m.get("clob_token_id")
     m['shift'] = 0.0
     m['current_price'] = None
@@ -86,7 +135,6 @@ def _enrich_market(m: dict) -> dict | None:
         except Exception:
             pass
 
-    # Drop settled markets
     if m['current_price'] is not None:
         if m['current_price'] > 0.98 or m['current_price'] < 0.02:
             return None
@@ -101,7 +149,6 @@ def search_markets(
     vol_min: float = Query(default=None, ge=0, description="Minimum volume (inclusive)"),
     vol_max: float = Query(default=None, ge=0, description="Maximum volume (inclusive)"),
 ):
-    # Reject oversized search strings before they reach SQLite
     if search is not None and len(search) > MAX_SEARCH_LEN:
         raise HTTPException(status_code=400, detail=f"Search query too long (max {MAX_SEARCH_LEN} chars).")
 
@@ -117,8 +164,6 @@ def search_markets(
     finally:
         db.close()
 
-    # Volume pre-filter: use MIN_VOLUME_FOR_CLOB as default floor when no search,
-    # then apply any user-supplied bounds on top.
     volume_floor = MIN_VOLUME_FOR_CLOB if not search else 0
 
     candidates = []
@@ -156,11 +201,90 @@ def get_watchlist():
     finally:
         db.close()
 
+
 @app.get("/wallets/{address}/unmask")
 def unmask_wallet(address: str):
     _validate_address(address)
     real_owner = unmask_proxy(address)
     return {"proxy": address, "real_owner": real_owner}
+
+
+@app.get("/wallets/{address}/unmask/full")
+def unmask_wallet_full(address: str):
+    _validate_address(address)
+    result = unmask_proxy_full(address)
+    return result
+
+
+@app.get("/markets/{market_id}/orderbook")
+def get_orderbook_analysis(market_id: str):
+    if not MARKET_ID_RE.match(market_id):
+        raise HTTPException(status_code=400, detail="Invalid market ID format.")
+
+    db = get_db()
+    try:
+        market = db.execute("SELECT clob_token_id, question FROM markets WHERE id = ?", (market_id,)).fetchone()
+        if not market:
+            raise HTTPException(status_code=404, detail="Market not found")
+        if not market["clob_token_id"]:
+            raise HTTPException(status_code=400, detail="No CLOB token ID for this market.")
+    finally:
+        db.close()
+
+    depth = analyze_orderbook_depth(market["clob_token_id"])
+    if not depth:
+        raise HTTPException(status_code=502, detail="Failed to fetch orderbook from CLOB.")
+
+    return {"market_id": market_id, "question": market["question"], "depth": depth}
+
+
+@app.get("/wallets/{address}/alerts")
+def get_entity_alerts(address: str, limit: int = 20):
+    _validate_address(address)
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM entity_alerts WHERE proxy_address = ? ORDER BY created_at DESC LIMIT ?",
+            (address, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+@app.get("/wallets/{address}/trades")
+def get_entity_trades(address: str, limit: int = 50):
+    _validate_address(address)
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT * FROM entity_trades WHERE proxy_address = ? ORDER BY timestamp DESC LIMIT ?",
+            (address, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+@app.get("/wallets/{address}/linked")
+def get_linked_entities(address: str):
+    _validate_address(address)
+    db = get_db()
+    try:
+        eoa_row = db.execute(
+            "SELECT human_eoa FROM linked_entities WHERE proxy_wallet = ?", (address,)
+        ).fetchone()
+
+        if not eoa_row:
+            return {"proxy": address, "linked": []}
+
+        eoa = eoa_row["human_eoa"]
+        linked = db.execute(
+            "SELECT * FROM linked_entities WHERE human_eoa = ?", (eoa,)
+        ).fetchall()
+        return {"proxy": address, "eoa": eoa, "linked": [dict(r) for r in linked]}
+    finally:
+        db.close()
 
 
 @app.get("/markets/{market_id}/ai-analysis")
@@ -169,16 +293,6 @@ def get_ai_analysis(
     research: bool = Query(default=False, description="Enable Tavily web research for news context"),
     force: bool = Query(default=False, description="Bypass cache and force a fresh LLM call")
 ):
-    """
-    Run AI analysis on a market.
-
-    Responses are cached per (market_id, research flag) for ANALYSIS_CACHE_TTL seconds (1 hour).
-    Use ?force=true to bypass the cache and trigger a fresh LLM call regardless of age.
-
-    Set ?research=true to include Tavily web search context (requires TAVILY_API_KEY).
-    Set ?research=false (default) to skip web search and use price data only.
-    """
-    # Reject non-numeric market IDs — Polymarket IDs are always numeric
     if not MARKET_ID_RE.match(market_id):
         raise HTTPException(status_code=400, detail="Invalid market ID format.")
 
@@ -186,10 +300,6 @@ def get_ai_analysis(
 
     db = get_db()
     try:
-        # ── Cache read ────────────────────────────────────────────────────────
-        # Check for a fresh cached analysis before hitting the LLM.
-        # The cache key is (market_id, research_used) so toggling web research
-        # always produces a distinct, correctly-labelled result.
         if not force:
             cached = db.execute(
                 """
@@ -211,7 +321,6 @@ def get_ai_analysis(
                     "cached_at": cached["created_at"]
                 }
 
-        # ── Cache miss / forced refresh — run the LLM ─────────────────────
         market = db.execute("SELECT * FROM markets WHERE id = ?", (market_id,)).fetchone()
         if not market:
             raise HTTPException(status_code=404, detail="Market not found")
@@ -236,9 +345,6 @@ def get_ai_analysis(
             use_research=research
         )
 
-        # ── Cache write ───────────────────────────────────────────────────────
-        # INSERT OR REPLACE so a forced refresh or a post-TTL call overwrites
-        # the stale row cleanly without leaving orphaned rows.
         db.execute(
             """
             INSERT OR REPLACE INTO analyses (market_id, research_used, analysis, created_at)
@@ -286,6 +392,7 @@ class Target(BaseModel):
             raise ValueError(f"Label too long (max {MAX_LABEL_LEN} chars).")
         return v
 
+
 @app.post("/watchlist")
 def add_to_watchlist(target: Target):
     db = get_db()
@@ -304,15 +411,15 @@ def add_to_watchlist(target: Target):
     finally:
         db.close()
 
+
 @app.get("/wallets/{address}/profile")
 def profile_wallet_api(address: str):
     _validate_address(address)
     try:
         real_owner = unmask_proxy(address)
 
-        from config import Config
         url = f"{Config.DATA_API}/trades?user={address}&limit=15"
-        resp = requests.get(url, timeout=10)
+        resp = http_requests.get(url, timeout=10)
         trades_data = resp.json() if resp.status_code == 200 else []
 
         simplified_trades = [
@@ -327,6 +434,7 @@ def profile_wallet_api(address: str):
     except Exception as e:
         log.error(f"Profiling failed: {e}")
         raise HTTPException(status_code=500, detail="AI Profiling failed.")
+
 
 @app.delete("/watchlist/{address}")
 def remove_from_watchlist(address: str):
